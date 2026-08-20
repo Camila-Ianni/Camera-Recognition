@@ -1,0 +1,27 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Operating System
+.DS_Store
+Thumbs.db
+
+# Database, local logs and credentials
+.env
+data/security_vision.db
+data/known_faces/*.jpg
+data/known_faces/*.png
+data/alerts/*.mp4
+data/alerts/*.jpg
+logs/*.log
+logs/*.txt
+
+# Model weights
+models/*.pt
+models/*.weights

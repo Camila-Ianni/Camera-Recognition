@@ -1,0 +1,8 @@
+opencv-python
+ultralytics
+face-recognition
+deepface
+customtkinter
+matplotlib
+numpy
+python-dotenv
