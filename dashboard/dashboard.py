@@ -61,6 +61,7 @@ class SecurityDashboard(ctk.CTk):
         self.replay_frames = []
         self.replay_idx = 0
         self.is_monitoring_night = False
+        self.face_recognition_cache = {}
         
         # Navigation State
         self.active_frame = None
@@ -941,10 +942,47 @@ class SecurityDashboard(ctk.CTk):
                     # 1. Update Person Tracker
                     tracked_bboxes = self.person_tracker.update(people_bboxes)
                     
-                    # Perform Face Recognition ONCE per frame (outside the loop!)
+                    # Face recognition cache check and throttle
+                    current_time = time.time()
+                    if not hasattr(self, "frame_counter_face"):
+                        self.frame_counter_face = 0
+                    self.frame_counter_face += 1
+                    
+                    # Clear face cache for tracker IDs that are no longer active
+                    active_ids = set(tracked_bboxes.keys())
+                    for cached_id in list(self.face_recognition_cache.keys()):
+                        if cached_id not in active_ids:
+                            del self.face_recognition_cache[cached_id]
+                            
+                    # Determine which tracker IDs need identification
+                    needs_recognition = []
+                    for t_id in active_ids:
+                        if t_id not in self.face_recognition_cache:
+                            needs_recognition.append(t_id)
+                        else:
+                            # Refresh unknown faces every 3 seconds to check if they can be identified
+                            cached_name, _, _, last_time = self.face_recognition_cache[t_id]
+                            if cached_name == "PERSONA DESCONOCIDA" and current_time - last_time > 3.0:
+                                needs_recognition.append(t_id)
+                    
+                    # Perform Face Recognition ONCE every 10 frames, only for unknown faces
                     rec_results = []
-                    if self.config.is_module_enabled("face_recognition") and len(tracked_bboxes) > 0:
+                    if self.config.is_module_enabled("face_recognition") and len(needs_recognition) > 0 and self.frame_counter_face % 10 == 0:
                         rec_results = self.face_recognizer.recognize_faces(frame)
+                        
+                        # Process face recognition results and cache them
+                        for rec in rec_results:
+                            fy1, fx2, fy2, fx1 = rec["box"]
+                            for t_id in needs_recognition:
+                                px1, py1, px2, py2 = tracked_bboxes[t_id]
+                                if px1 <= fx1 <= px2 and py1 <= fy1 <= py2:
+                                    self.face_recognition_cache[t_id] = (
+                                        rec["name"],
+                                        rec["status"],
+                                        rec["confidence"],
+                                        current_time
+                                    )
+                                    break
                     
                     # Draw Safety Zones
                     h, w, _ = frame.shape
@@ -977,31 +1015,21 @@ class SecurityDashboard(ctk.CTk):
                         for z in person_zones:
                             self.person_tracker.record_zone_visit(tracker_id, z)
                             
-                        # Face Identification
-                        person_crop = frame[max(0, py1):min(h, py2), max(0, px1):min(w, px2)]
-                        
-                        name = "PERSONA DESCONOCIDA"
-                        status = "unknown"
-                        face_confidence = 0.0
-                        
-                        if person_crop.size > 0 and self.config.is_module_enabled("face_recognition"):
-                            # Match with face recognition results from earlier
-                            for rec in rec_results:
-                                fy1, fx2, fy2, fx1 = rec["box"]
-                                # Check overlapping coordinates
-                                if px1 <= fx1 <= px2 and py1 <= fy1 <= py2:
-                                    name = rec["name"]
-                                    status = rec["status"]
-                                    face_confidence = rec["confidence"]
-                                    break
-                                    
-                        # If facial recognition is uninstalled/mocked or no match
-                        if status == "unknown" and not self.config.is_module_enabled("face_recognition"):
-                            # Simulated mock face recognition based on tracker ID
-                            name, status, face_confidence = self.face_recognizer.mock_recognize(tracker_id)
+                        # Face Identification from cache
+                        if tracker_id in self.face_recognition_cache:
+                            name, status, face_confidence, _ = self.face_recognition_cache[tracker_id]
+                        else:
+                            name = "PERSONA DESCONOCIDA"
+                            status = "unknown"
+                            face_confidence = 0.0
+                            # Mock if face recognition is disabled
+                            if not self.config.is_module_enabled("face_recognition"):
+                                name, status, face_confidence = self.face_recognizer.mock_recognize(tracker_id)
+                                self.face_recognition_cache[tracker_id] = (name, status, face_confidence, current_time)
                             
                         # Emotion Analysis
                         emotions = None
+                        person_crop = frame[max(0, py1):min(h, py2), max(0, px1):min(w, px2)]
                         if person_crop.size > 0 and self.config.is_module_enabled("emotion_detection"):
                             emotions = self.emotion_detector.analyze_emotion(person_crop, tracker_id)
                             
@@ -1037,11 +1065,11 @@ class SecurityDashboard(ctk.CTk):
                                 camera_manager=self.camera_manager
                             )
                             
-                        # Draw trajectory recorrido
+                        # Draw trajectory recorrido (bottom-center feet level, thin orange path)
                         traj = self.person_tracker.get_trajectory(tracker_id)
                         if len(traj) > 1:
                             pts_arr = np.array(traj, np.int32)
-                            cv2.polylines(frame, [pts_arr], False, (255, 200, 0), 2)
+                            cv2.polylines(frame, [pts_arr], False, (0, 140, 255), 1, cv2.LINE_AA)
                             
                         # Bounding Box Color Code
                         if alert_eval and alert_eval["level"] == "CRÍTICO":
@@ -1055,31 +1083,58 @@ class SecurityDashboard(ctk.CTk):
                             
                         cv2.rectangle(frame, (px1, py1), (px2, py2), box_color, 2)
                         
-                        # Top label with background rectangle for visibility
+                        # Top label (ID & Name) - Larger, clear, and visible
                         lbl_top = f"ID {tracker_id:02d}: {name}"
-                        (w_t, h_t), _ = cv2.getTextSize(lbl_top, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
-                        cv2.rectangle(frame, (px1, py1 - 20 - h_t - 4), (px1 + w_t + 4, py1 - 18), box_color, -1)
-                        cv2.putText(frame, lbl_top, (px1 + 2, py1 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
+                        font_scale = 0.6
+                        font_thickness = 1
+                        (w_t, h_t), _ = cv2.getTextSize(lbl_top, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
                         
-                        # Sub label (Estado)
+                        # Handle top edge clipping
+                        if py1 - h_t - 15 < 0:
+                            y_rect_top = py1
+                            y_rect_bottom = py1 + h_t + 10
+                            y_text = py1 + h_t + 4
+                        else:
+                            y_rect_top = py1 - h_t - 10
+                            y_rect_bottom = py1
+                            y_text = py1 - 4
+                            
+                        cv2.rectangle(frame, (px1, y_rect_top), (px1 + w_t + 6, y_rect_bottom), box_color, -1)
+                        cv2.putText(frame, lbl_top, (px1 + 3, y_text), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness, cv2.LINE_AA)
+                        
+                        # Sub label (Estado: AUTORIZADO / NO AUTORIZADO)
                         lbl_sub = f"ESTADO: {status.upper()}"
-                        (w_s, h_s), _ = cv2.getTextSize(lbl_sub, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
-                        cv2.rectangle(frame, (px1, py1 - 4 - h_s - 2), (px1 + w_s + 4, py1 - 2), (30, 30, 30), -1)
-                        cv2.putText(frame, lbl_sub, (px1 + 2, py1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
+                        sub_font_scale = 0.5
+                        (w_s, h_s), _ = cv2.getTextSize(lbl_sub, cv2.FONT_HERSHEY_SIMPLEX, sub_font_scale, 1)
+                        
+                        if py1 - h_t - 15 < 0:
+                            y_rect_top_s = y_rect_bottom
+                            y_rect_bottom_s = y_rect_bottom + h_s + 8
+                            y_text_s = y_rect_bottom + h_s + 3
+                        else:
+                            y_rect_top_s = py1
+                            y_rect_bottom_s = py1 + h_s + 8
+                            y_text_s = py1 + h_s + 3
+                            
+                        cv2.rectangle(frame, (px1, y_rect_top_s), (px1 + w_s + 6, y_rect_bottom_s), (30, 30, 30), -1)
+                        cv2.putText(frame, lbl_sub, (px1 + 3, y_text_s), cv2.FONT_HERSHEY_SIMPLEX, sub_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
                         
                         # Draw bottom labels (Emocion & Apariencia)
+                        y_g_offset = 2
                         if emotions:
                             dominant_emotion = max(emotions.items(), key=lambda x: x[1])
                             lbl_emo = f"EMOCION: {dominant_emotion[0]} ({int(dominant_emotion[1])}%)"
-                            (w_e, h_e), _ = cv2.getTextSize(lbl_emo, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-                            cv2.rectangle(frame, (px1, py2 + 2), (px1 + w_e + 4, py2 + h_e + 6), (0, 0, 0), -1)
-                            cv2.putText(frame, lbl_emo, (px1 + 2, py2 + h_e + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1, cv2.LINE_AA)
+                            (w_e, h_e), _ = cv2.getTextSize(lbl_emo, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
+                            cv2.rectangle(frame, (px1, py2 + 2), (px1 + w_e + 6, py2 + h_e + 10), (0, 0, 0), -1)
+                            cv2.putText(frame, lbl_emo, (px1 + 3, py2 + h_e + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
+                            y_g_offset = h_e + 14
                             
                         estimated_gender = "Femenino" if tracker_id % 2 == 0 else "Masculino"
                         lbl_gender = f"APARIENCIA: {estimated_gender} (Clasif. visual estimada)"
-                        (w_g, h_g), _ = cv2.getTextSize(lbl_gender, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)
-                        cv2.rectangle(frame, (px1, py2 + 18), (px1 + w_g + 4, py2 + h_g + 22), (0, 0, 0), -1)
-                        cv2.putText(frame, lbl_gender, (px1 + 2, py2 + h_g + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 200, 200), 1, cv2.LINE_AA)
+                        (w_g, h_g), _ = cv2.getTextSize(lbl_gender, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+                        
+                        cv2.rectangle(frame, (px1, py2 + y_g_offset), (px1 + w_g + 6, py2 + y_g_offset + h_g + 8), (0, 0, 0), -1)
+                        cv2.putText(frame, lbl_gender, (px1 + 3, py2 + y_g_offset + h_g + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
                         
                         # Pack details for sidebar info frame
                         active_detections_info.append({
@@ -1108,9 +1163,9 @@ class SecurityDashboard(ctk.CTk):
                         if is_risk:
                             label += " [RIESGO]"
                         
-                        (w_l, h_l), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
-                        cv2.rectangle(frame, (ox1, oy1 - 5 - h_l - 2), (ox1 + w_l + 4, oy1 - 3), color, -1)
-                        cv2.putText(frame, label, (ox1 + 2, oy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
+                        (w_l, h_l), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                        cv2.rectangle(frame, (ox1, oy1 - 5 - h_l - 4), (ox1 + w_l + 6, oy1 - 3), color, -1)
+                        cv2.putText(frame, label, (ox1 + 3, oy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
 
                     # Render details in sidebar info panel if Camera view is active
                     self.render_side_detections(active_detections_info)

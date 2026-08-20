@@ -23,7 +23,9 @@ class PersonTracker:
         self.objects[object_id] = centroid
         self.bboxes[object_id] = bbox
         self.disappeared[object_id] = 0
-        self.trajectories[object_id] = [centroid]
+        px1, py1, px2, py2 = bbox
+        bottom_center = (int((px1 + px2) / 2.0), py2)
+        self.trajectories[object_id] = [bottom_center]
         self.first_seen[object_id] = time.time()
         self.last_seen[object_id] = time.time()
         self.zones_visited[object_id] = set()
@@ -101,8 +103,10 @@ class PersonTracker:
                 self.disappeared[object_id] = 0
                 self.last_seen[object_id] = time.time()
                 
-                # Append to trajectory
-                self.trajectories[object_id].append(tuple(input_centroids[col]))
+                # Append bottom-center coordinate (cx, y2) to trajectory
+                px1, py1, px2, py2 = rects[col]
+                bottom_center = (int((px1 + px2) / 2.0), py2)
+                self.trajectories[object_id].append(bottom_center)
                 if len(self.trajectories[object_id]) > self.max_trajectory_points:
                     self.trajectories[object_id].pop(0)
 
