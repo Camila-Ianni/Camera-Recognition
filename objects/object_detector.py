@@ -19,11 +19,17 @@ class ObjectDetector:
             return False
 
         try:
+            import torch
+            self.device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+        except ImportError:
+            self.device = "cpu"
+
+        try:
             # Load YOLOv8 Nano model (weights are downloaded automatically if missing)
             # Ensure model directory exists
             os.makedirs("models", exist_ok=True)
             self.model = YOLO("models/yolov8n.pt")
-            print("YOLOv8 model loaded successfully.")
+            print(f"YOLOv8 model loaded successfully on device: {self.device}")
             return True
         except Exception as e:
             print(f"Error loading YOLO model: {e}")
@@ -49,7 +55,7 @@ class ObjectDetector:
         try:
             # Run inference
             # verbose=False reduces terminal spam
-            results = self.model(frame, verbose=False)
+            results = self.model(frame, device=self.device, verbose=False)
             
             if results and len(results) > 0:
                 result = results[0]

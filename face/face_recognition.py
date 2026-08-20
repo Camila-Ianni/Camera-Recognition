@@ -23,8 +23,10 @@ class FaceRecognizer:
             return results
 
         try:
-            # Convert OpenCV BGR to RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Downscale frame to 1/4 size for 16x speedup
+            small_frame = cv2.resize(frame, (0, 0), fx=0.25, fy=0.25)
+            # Convert BGR to RGB
+            rgb_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
             
             # Find all face locations and encodings in the frame
             face_locations = face_recognition.face_locations(rgb_frame, model="hog")
@@ -36,6 +38,13 @@ class FaceRecognizer:
             known_encodings, known_metadata = self.face_db.get_known_faces_cache()
             
             for face_loc, face_enc in zip(face_locations, face_encodings):
+                top, right, bottom, left = face_loc
+                # Scale back up by 4x
+                top *= 4
+                right *= 4
+                bottom *= 4
+                left *= 4
+                
                 name = "PERSONA DESCONOCIDA"
                 status = "unknown"
                 min_dist = 1.0
@@ -55,7 +64,7 @@ class FaceRecognizer:
                 
                 # face_loc is (top, right, bottom, left)
                 results.append({
-                    "box": face_loc,
+                    "box": (top, right, bottom, left),
                     "name": name,
                     "status": status,
                     "confidence": 1.0 - min_dist

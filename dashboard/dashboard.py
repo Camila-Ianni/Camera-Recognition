@@ -927,181 +927,200 @@ class SecurityDashboard(ctk.CTk):
 
     # ==================== MAIN PROCESSING LOOP & DRAWING ====================
     def update_feed(self):
-        if self.current_frame_mode == "camera" and self.camera_manager.is_running:
-            frame = self.camera_manager.get_frame()
-            if frame is not None:
-                # Add to evidence buffer
-                self.evidence_manager.add_frame(frame)
-                
-                # Perform AI Detections
-                # Bounding boxes coordinates list for people
-                people_bboxes, other_objects = self.object_detector.detect(frame)
-                
-                # 1. Update Person Tracker
-                tracked_bboxes = self.person_tracker.update(people_bboxes)
-                
-                # Draw Safety Zones
-                h, w, _ = frame.shape
-                active_zones_by_person = {} # tracker_id -> list of zones
-                
-                zones = self.zone_manager.get_zones()
-                for name, info in zones.items():
-                    pts = info["points"]
-                    is_restr = info["restricted"]
-                    pixel_pts = np.array([[int(nx * w), int(ny * h)] for nx, ny in pts], np.int32)
-                    color = (0, 0, 200) if is_restr else (0, 200, 0)
-                    cv2.polylines(frame, [pixel_pts], True, color, 1)
-                    # Label
-                    cv2.putText(frame, name, (pixel_pts[0][0], pixel_pts[0][1] - 5), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+        if self.current_frame_mode == "camera":
+            if self.camera_manager.is_running:
+                frame = self.camera_manager.get_frame()
+                if frame is not None:
+                    # Add to evidence buffer
+                    self.evidence_manager.add_frame(frame)
                     
-                # Store active details to render on sidebar info frame
-                active_detections_info = []
-                
-                # 2. Iterate through tracked people and run face/emotion
-                for tracker_id, box in tracked_bboxes.items():
-                    px1, py1, px2, py2 = box
-                    # Bottom-center coordinate for zone check
-                    bc_x = int((px1 + px2) / 2.0)
-                    bc_y = py2
+                    # Perform AI Detections
+                    # Bounding boxes coordinates list for people
+                    people_bboxes, other_objects = self.object_detector.detect(frame)
                     
-                    # Check zones
-                    person_zones = self.zone_manager.get_zones_for_point(bc_x, bc_y, w, h)
-                    for z in person_zones:
-                        self.person_tracker.record_zone_visit(tracker_id, z)
-                        
-                    # Face Identification
-                    person_crop = frame[max(0, py1):min(h, py2), max(0, px1):min(w, px2)]
+                    # 1. Update Person Tracker
+                    tracked_bboxes = self.person_tracker.update(people_bboxes)
                     
-                    name = "PERSONA DESCONOCIDA"
-                    status = "unknown"
-                    face_confidence = 0.0
-                    
-                    if person_crop.size > 0 and self.config.is_module_enabled("face_recognition"):
-                        # Attempt facial recognition
+                    # Perform Face Recognition ONCE per frame (outside the loop!)
+                    rec_results = []
+                    if self.config.is_module_enabled("face_recognition") and len(tracked_bboxes) > 0:
                         rec_results = self.face_recognizer.recognize_faces(frame)
-                        
-                        # Find if any face box is inside this person's bounding box
-                        for rec in rec_results:
-                            fy1, fx2, fy2, fx1 = rec["box"]
-                            # Check overlapping coordinates
-                            if px1 <= fx1 <= px2 and py1 <= fy1 <= py2:
-                                name = rec["name"]
-                                status = rec["status"]
-                                face_confidence = rec["confidence"]
-                                break
-                                
-                    # If facial recognition is uninstalled/mocked or not matches
-                    if status == "unknown" and not self.config.is_module_enabled("face_recognition"):
-                        # Simulated mock face recognition based on tracker ID
-                        name, status, face_confidence = self.face_recognizer.mock_recognize(tracker_id)
-                        
-                    # Emotion Analysis
-                    emotions = None
-                    if person_crop.size > 0 and self.config.is_module_enabled("emotion_detection"):
-                        emotions = self.emotion_detector.analyze_emotion(person_crop, tracker_id)
-                        
-                    # Behavior violations
-                    duration = self.person_tracker.get_dwell_time(tracker_id)
-                    violations = self.behavior_analyzer.analyze_person(tracker_id, box, duration, person_zones, self.zone_manager)
                     
-                    # Evaluate alert manager
-                    alert_eval = self.alert_manager.evaluate_and_alert(
-                        tracker_id=tracker_id,
-                        bbox=box,
-                        name=name,
-                        status=status,
-                        emotions=emotions,
-                        detected_objects=other_objects,
-                        zones=person_zones,
-                        behavior_violations=violations,
-                        camera_manager=self.camera_manager
-                    )
+                    # Draw Safety Zones
+                    h, w, _ = frame.shape
                     
-                    # Night Mode Simulation Alert Check
-                    if self.is_monitoring_night and not violations:
-                        # Under night monitoring, ANY person is an alert trigger (unusual activity)
-                        self.alert_manager.evaluate_and_alert(
+                    zones = self.zone_manager.get_zones()
+                    for name, info in zones.items():
+                        pts = info["points"]
+                        is_restr = info["restricted"]
+                        pixel_pts = np.array([[int(nx * w), int(ny * h)] for nx, ny in pts], np.int32)
+                        color = (0, 0, 200) if is_restr else (0, 200, 0)
+                        cv2.polylines(frame, [pixel_pts], True, color, 1)
+                        # Label background and text
+                        (w_lbl, h_lbl), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+                        cv2.rectangle(frame, (pixel_pts[0][0], pixel_pts[0][1] - 12 - h_lbl), (pixel_pts[0][0] + w_lbl + 2, pixel_pts[0][1] - 10), (0, 0, 0), -1)
+                        cv2.putText(frame, name, (pixel_pts[0][0] + 1, pixel_pts[0][1] - 12), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
+                        
+                    # Store active details to render on sidebar info frame
+                    active_detections_info = []
+                    
+                    # 2. Iterate through tracked people and run face/emotion
+                    for tracker_id, box in tracked_bboxes.items():
+                        px1, py1, px2, py2 = box
+                        # Bottom-center coordinate for zone check
+                        bc_x = int((px1 + px2) / 2.0)
+                        bc_y = py2
+                        
+                        # Check zones
+                        person_zones = self.zone_manager.get_zones_for_point(bc_x, bc_y, w, h)
+                        for z in person_zones:
+                            self.person_tracker.record_zone_visit(tracker_id, z)
+                            
+                        # Face Identification
+                        person_crop = frame[max(0, py1):min(h, py2), max(0, px1):min(w, px2)]
+                        
+                        name = "PERSONA DESCONOCIDA"
+                        status = "unknown"
+                        face_confidence = 0.0
+                        
+                        if person_crop.size > 0 and self.config.is_module_enabled("face_recognition"):
+                            # Match with face recognition results from earlier
+                            for rec in rec_results:
+                                fy1, fx2, fy2, fx1 = rec["box"]
+                                # Check overlapping coordinates
+                                if px1 <= fx1 <= px2 and py1 <= fy1 <= py2:
+                                    name = rec["name"]
+                                    status = rec["status"]
+                                    face_confidence = rec["confidence"]
+                                    break
+                                    
+                        # If facial recognition is uninstalled/mocked or no match
+                        if status == "unknown" and not self.config.is_module_enabled("face_recognition"):
+                            # Simulated mock face recognition based on tracker ID
+                            name, status, face_confidence = self.face_recognizer.mock_recognize(tracker_id)
+                            
+                        # Emotion Analysis
+                        emotions = None
+                        if person_crop.size > 0 and self.config.is_module_enabled("emotion_detection"):
+                            emotions = self.emotion_detector.analyze_emotion(person_crop, tracker_id)
+                            
+                        # Behavior violations
+                        duration = self.person_tracker.get_dwell_time(tracker_id)
+                        violations = self.behavior_analyzer.analyze_person(tracker_id, box, duration, person_zones, self.zone_manager)
+                        
+                        # Evaluate alert manager
+                        alert_eval = self.alert_manager.evaluate_and_alert(
                             tracker_id=tracker_id,
                             bbox=box,
                             name=name,
-                            status="unauthorized" if status == "unknown" else status,
+                            status=status,
                             emotions=emotions,
                             detected_objects=other_objects,
                             zones=person_zones,
-                            behavior_violations=[{"severity_score": 25, "description": "Actividad inusual nocturna detectada", "zone": "General"}],
+                            behavior_violations=violations,
                             camera_manager=self.camera_manager
                         )
                         
-                    # Draw trajectory recorrido
-                    traj = self.person_tracker.get_trajectory(tracker_id)
-                    if len(traj) > 1:
-                        pts_arr = np.array(traj, np.int32)
-                        cv2.polylines(frame, [pts_arr], False, (255, 200, 0), 2)
+                        # Night Mode Simulation Alert Check
+                        if self.is_monitoring_night and not violations:
+                            # Under night monitoring, ANY person is an alert trigger (unusual activity)
+                            self.alert_manager.evaluate_and_alert(
+                                tracker_id=tracker_id,
+                                bbox=box,
+                                name=name,
+                                status="unauthorized" if status == "unknown" else status,
+                                emotions=emotions,
+                                detected_objects=other_objects,
+                                zones=person_zones,
+                                behavior_violations=[{"severity_score": 25, "description": "Actividad inusual nocturna detectada", "zone": "General"}],
+                                camera_manager=self.camera_manager
+                            )
+                            
+                        # Draw trajectory recorrido
+                        traj = self.person_tracker.get_trajectory(tracker_id)
+                        if len(traj) > 1:
+                            pts_arr = np.array(traj, np.int32)
+                            cv2.polylines(frame, [pts_arr], False, (255, 200, 0), 2)
+                            
+                        # Bounding Box Color Code
+                        if alert_eval and alert_eval["level"] == "CRÍTICO":
+                            box_color = (0, 0, 255) # Red
+                        elif status == "unauthorized":
+                            box_color = (0, 0, 255)
+                        elif status == "authorized":
+                            box_color = (0, 255, 0) # Green
+                        else:
+                            box_color = (0, 255, 255) # Yellow/Cyan
+                            
+                        cv2.rectangle(frame, (px1, py1), (px2, py2), box_color, 2)
                         
-                    # Bounding Box Color Code
-                    if alert_eval and alert_eval["level"] == "CRÍTICO":
-                        box_color = (0, 0, 255) # Red
-                    elif status == "unauthorized":
-                        box_color = (0, 0, 255)
-                    elif status == "authorized":
-                        box_color = (0, 255, 0) # Green
-                    else:
-                        box_color = (0, 255, 255) # Yellow/Cyan
+                        # Top label with background rectangle for visibility
+                        lbl_top = f"ID {tracker_id:02d}: {name}"
+                        (w_t, h_t), _ = cv2.getTextSize(lbl_top, cv2.FONT_HERSHEY_SIMPLEX, 0.42, 1)
+                        cv2.rectangle(frame, (px1, py1 - 20 - h_t - 4), (px1 + w_t + 4, py1 - 18), box_color, -1)
+                        cv2.putText(frame, lbl_top, (px1 + 2, py1 - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (255, 255, 255), 1, cv2.LINE_AA)
                         
-                    cv2.rectangle(frame, (px1, py1), (px2, py2), box_color, 2)
-                    
-                    # Labels on screen
-                    lbl_top = f"ID {tracker_id}: {name}"
-                    cv2.putText(frame, lbl_top, (px1, py1 - 25), cv2.FONT_HERSHEY_SIMPLEX, 0.45, box_color, 2)
-                    
-                    lbl_sub = f"ESTADO: {status.upper()}"
-                    cv2.putText(frame, lbl_sub, (px1, py1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.4, box_color, 1)
-                    
-                    if emotions:
-                        dominant_emotion = max(emotions.items(), key=lambda x: x[1])
-                        lbl_emo = f"EMOCION: {dominant_emotion[0]} ({int(dominant_emotion[1])}%)"
-                        cv2.putText(frame, lbl_emo, (px1, py2 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                        # Sub label (Estado)
+                        lbl_sub = f"ESTADO: {status.upper()}"
+                        (w_s, h_s), _ = cv2.getTextSize(lbl_sub, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+                        cv2.rectangle(frame, (px1, py1 - 4 - h_s - 2), (px1 + w_s + 4, py1 - 2), (30, 30, 30), -1)
+                        cv2.putText(frame, lbl_sub, (px1 + 2, py1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
                         
-                    # Estimated visual appearance label (sexo aparente)
-                    # We estimate it deterministically to avoid DeepFace crash and show classification visually estimated notice
-                    estimated_gender = "Femenino" if tracker_id % 2 == 0 else "Masculino"
-                    lbl_gender = f"APARIENCIA GÉNERO ESTIMADA: {estimated_gender}"
-                    cv2.putText(frame, lbl_gender, (px1, py2 + 30), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1)
-                    
-                    # Pack details for sidebar info frame
-                    active_detections_info.append({
-                        "id": tracker_id,
-                        "name": name,
-                        "status": status,
-                        "zones": person_zones,
-                        "duration": int(duration),
-                        "emotion": max(emotions.items(), key=lambda x: x[1])[0] if emotions else "Neutral",
-                        "gender": estimated_gender,
-                        "level": alert_eval["level"] if alert_eval else "NORMAL"
-                    })
+                        # Draw bottom labels (Emocion & Apariencia)
+                        if emotions:
+                            dominant_emotion = max(emotions.items(), key=lambda x: x[1])
+                            lbl_emo = f"EMOCION: {dominant_emotion[0]} ({int(dominant_emotion[1])}%)"
+                            (w_e, h_e), _ = cv2.getTextSize(lbl_emo, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
+                            cv2.rectangle(frame, (px1, py2 + 2), (px1 + w_e + 4, py2 + h_e + 6), (0, 0, 0), -1)
+                            cv2.putText(frame, lbl_emo, (px1 + 2, py2 + h_e + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 255, 255), 1, cv2.LINE_AA)
+                            
+                        estimated_gender = "Femenino" if tracker_id % 2 == 0 else "Masculino"
+                        lbl_gender = f"APARIENCIA: {estimated_gender} (Clasif. visual estimada)"
+                        (w_g, h_g), _ = cv2.getTextSize(lbl_gender, cv2.FONT_HERSHEY_SIMPLEX, 0.32, 1)
+                        cv2.rectangle(frame, (px1, py2 + 18), (px1 + w_g + 4, py2 + h_g + 22), (0, 0, 0), -1)
+                        cv2.putText(frame, lbl_gender, (px1 + 2, py2 + h_g + 20), cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 200, 200), 1, cv2.LINE_AA)
+                        
+                        # Pack details for sidebar info frame
+                        active_detections_info.append({
+                            "id": tracker_id,
+                            "name": name,
+                            "status": status,
+                            "zones": person_zones,
+                            "duration": int(duration),
+                            "emotion": max(emotions.items(), key=lambda x: x[1])[0] if emotions else "Neutral",
+                            "gender": estimated_gender,
+                            "level": alert_eval["level"] if alert_eval else "NORMAL"
+                        })
 
-                # 3. Draw and Check other objects
-                risk_objects_config = self.config.get_risk_objects()
-                for obj in other_objects:
-                    ox1, oy1, ox2, oy2 = obj["box"]
-                    o_name = obj["class_name"]
-                    o_conf = obj["confidence"]
-                    
-                    is_risk = o_name in risk_objects_config
-                    color = (0, 0, 255) if is_risk else (255, 255, 0)
-                    
-                    cv2.rectangle(frame, (ox1, oy1), (ox2, oy2), color, 1)
-                    label = f"{o_name.upper()} - {int(o_conf * 100)}%"
-                    if is_risk:
-                        label += " [RIESGO]"
-                    cv2.putText(frame, label, (ox1, oy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
+                    # 3. Draw and Check other objects
+                    risk_objects_config = self.config.get_risk_objects()
+                    for obj in other_objects:
+                        ox1, oy1, ox2, oy2 = obj["box"]
+                        o_name = obj["class_name"]
+                        o_conf = obj["confidence"]
+                        
+                        is_risk = o_name in risk_objects_config
+                        color = (0, 0, 255) if is_risk else (255, 255, 0)
+                        
+                        cv2.rectangle(frame, (ox1, oy1), (ox2, oy2), color, 1)
+                        label = f"{o_name.upper()} - {int(o_conf * 100)}%"
+                        if is_risk:
+                            label += " [RIESGO]"
+                        
+                        (w_l, h_l), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+                        cv2.rectangle(frame, (ox1, oy1 - 5 - h_l - 2), (ox1 + w_l + 4, oy1 - 3), color, -1)
+                        cv2.putText(frame, label, (ox1 + 2, oy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (255, 255, 255), 1, cv2.LINE_AA)
 
-                # Render details in sidebar info panel if Camera view is active
-                self.render_side_detections(active_detections_info)
+                    # Render details in sidebar info panel if Camera view is active
+                    self.render_side_detections(active_detections_info)
 
-                # Render frame to canvas
-                self.render_opencv_frame(frame)
+                    # Render frame to canvas
+                    self.render_opencv_frame(frame)
+                else:
+                    self.render_offline_frame("Cámara activa, esperando fotograma...")
+            else:
+                self.render_offline_frame("CÁMARA DE VIGILANCIA OFFLINE\n\nPresione 'Iniciar Cámara' o cargue un video de simulación.\nSi es en macOS, inicie la app desde su terminal para habilitar los permisos.")
                 
         # Schedule next update
         self.after(30, self.update_feed)
@@ -1136,6 +1155,28 @@ class SecurityDashboard(ctk.CTk):
             )
             ctk.CTkLabel(card, text=det_txt, font=ctk.CTkFont(size=11), justify="left").pack(anchor="w", padx=10, pady=5)
 
+    def render_offline_frame(self, message):
+        if self.active_frame is None or not hasattr(self, "canvas_video"):
+            return
+            
+        canvas_w = self.canvas_video.winfo_width()
+        canvas_h = self.canvas_video.winfo_height()
+        if canvas_w < 10 or canvas_h < 10:
+            canvas_w, canvas_h = 640, 480
+            
+        self.canvas_video.delete("all")
+        # Draw background dark gray/blue
+        self.canvas_video.create_rectangle(0, 0, canvas_w, canvas_h, fill="#1B2631", outline="")
+        self.canvas_video.create_text(
+            canvas_w // 2, canvas_h // 2,
+            text=message,
+            fill="#ECF0F1",
+            font=("Helvetica", 11, "bold"),
+            justify="center",
+            width=canvas_w - 40
+        )
+        self.lbl_fps.configure(text="FPS: 0.0")
+
     def render_opencv_frame(self, frame):
         if self.active_frame is None or not hasattr(self, "canvas_video"):
             return
@@ -1148,11 +1189,31 @@ class SecurityDashboard(ctk.CTk):
         if canvas_w < 10 or canvas_h < 10:
             canvas_w, canvas_h = 640, 480
             
+        # Get frame dimensions
+        h_f, w_f, _ = frame.shape
+        aspect_ratio = w_f / h_f
+        
+        # Calculate scaled dimensions maintaining aspect ratio
+        scale_w = canvas_w
+        scale_h = int(canvas_w / aspect_ratio)
+        
+        if scale_h > canvas_h:
+            scale_h = canvas_h
+            scale_w = int(canvas_h * aspect_ratio)
+            
         # Resize frame
-        resized = cv2.resize(frame, (canvas_w, canvas_h))
+        resized = cv2.resize(frame, (scale_w, scale_h))
+        
+        # Create black background container
+        bg_image = np.zeros((canvas_h, canvas_w, 3), dtype=np.uint8)
+        
+        # Paste resized frame into center of background image
+        x_offset = (canvas_w - scale_w) // 2
+        y_offset = (canvas_h - scale_h) // 2
+        bg_image[y_offset:y_offset+scale_h, x_offset:x_offset+scale_w] = resized
         
         # Convert BGR to RGB
-        rgb = cv2.cvtColor(resized, cv2.COLOR_BGR2RGB)
+        rgb = cv2.cvtColor(bg_image, cv2.COLOR_BGR2RGB)
         
         # Convert to PhotoImage
         img = Image.fromarray(rgb)
