@@ -24,14 +24,20 @@ class CameraManager:
         if self.is_running:
             return True
             
-        # Try opening the video capture
-        self.cap = cv2.VideoCapture(self.source)
+        # Try opening the video capture using native AVFoundation backend on macOS
+        if isinstance(self.source, int):
+            self.cap = cv2.VideoCapture(self.source, cv2.CAP_AVFOUNDATION)
+        else:
+            self.cap = cv2.VideoCapture(self.source)
+            
         if not self.cap.isOpened():
             print(f"Error: Could not open camera source {self.source}")
             return False
             
-        # Set hardware webcam dimensions explicitly to prevent buffer stride glitches
-        # (Removed to prevent macOS FaceTime camera sensor crop/zoom-in behavior)
+        # Set hardware webcam dimensions to standard widescreen 1280x720 natively
+        if isinstance(self.source, int):
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
             
         self.is_running = True
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)

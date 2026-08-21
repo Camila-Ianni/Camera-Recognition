@@ -961,7 +961,9 @@ class SecurityDashboard(ctk.CTk):
                             needs_recognition.append(t_id)
                         else:
                             # Refresh unknown faces every 3 seconds to check if they can be identified
-                            cached_name, _, _, last_time = self.face_recognition_cache[t_id]
+                            cached_vals = self.face_recognition_cache[t_id]
+                            cached_name = cached_vals[0]
+                            last_time = cached_vals[4]
                             if cached_name == "PERSONA DESCONOCIDA" and current_time - last_time > 3.0:
                                 needs_recognition.append(t_id)
                     
@@ -980,12 +982,20 @@ class SecurityDashboard(ctk.CTk):
                                         rec["name"],
                                         rec["status"],
                                         rec["confidence"],
+                                        rec["box"],
                                         current_time
                                     )
                                     break
                     
                     # Draw Safety Zones
                     h, w, _ = frame.shape
+                    
+                    # Calculate dynamic font scale and thickness based on frame height
+                    base_h = 720.0
+                    font_scale = max(0.8, (h / base_h) * 1.0)
+                    font_thickness = max(2, int((h / base_h) * 2))
+                    box_thickness = max(2, int((h / base_h) * 3))
+                    sub_thickness = max(1, font_thickness - 1)
                     
                     zones = self.zone_manager.get_zones()
                     for name, info in zones.items():
@@ -995,11 +1005,11 @@ class SecurityDashboard(ctk.CTk):
                         color = (0, 0, 200) if is_restr else (0, 200, 0)
                         cv2.polylines(frame, [pixel_pts], True, color, 1)
                         
-                        # Large, readable labels in solid boxes with white text (fontScale=0.55)
-                        (w_lbl, h_lbl), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
-                        cv2.rectangle(frame, (pixel_pts[0][0], pixel_pts[0][1] - h_lbl - 12), (pixel_pts[0][0] + w_lbl + 6, pixel_pts[0][1]), color, -1)
-                        cv2.putText(frame, name, (pixel_pts[0][0] + 3, pixel_pts[0][1] - 5), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+                        # Large, readable labels in solid boxes with white text (using dynamic scales)
+                        (w_lbl, h_lbl), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.85, sub_thickness)
+                        cv2.rectangle(frame, (pixel_pts[0][0], pixel_pts[0][1] - h_lbl - 14), (pixel_pts[0][0] + w_lbl + 8, pixel_pts[0][1]), color, -1)
+                        cv2.putText(frame, name, (pixel_pts[0][0] + 4, pixel_pts[0][1] - 6), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.85, (255, 255, 255), sub_thickness, cv2.LINE_AA)
                         
                     # Store active details to render on sidebar info frame
                     active_detections_info = []
@@ -1017,8 +1027,13 @@ class SecurityDashboard(ctk.CTk):
                             self.person_tracker.record_zone_visit(tracker_id, z)
                             
                         # Face Identification from cache
+                        face_box = None
                         if tracker_id in self.face_recognition_cache:
-                            name, status, face_confidence, _ = self.face_recognition_cache[tracker_id]
+                            cached_vals = self.face_recognition_cache[tracker_id]
+                            name = cached_vals[0]
+                            status = cached_vals[1]
+                            face_confidence = cached_vals[2]
+                            face_box = cached_vals[3]
                         else:
                             name = "PERSONA DESCONOCIDA"
                             status = "unknown"
@@ -1026,15 +1041,22 @@ class SecurityDashboard(ctk.CTk):
                             # Mock if face recognition is disabled
                             if not self.config.is_module_enabled("face_recognition"):
                                 name, status, face_confidence = self.face_recognizer.mock_recognize(tracker_id)
-                                self.face_recognition_cache[tracker_id] = (name, status, face_confidence, current_time)
+                                self.face_recognition_cache[tracker_id] = (name, status, face_confidence, None, current_time)
                             
-                        # Retrieve emotions and gender from cache
+                        # Retrieve emotions and gender from cache (cropping actual FACE instead of full body)
                         emotions = None
                         estimated_gender = "Femenino" if tracker_id in [1, 2, 5] else "Masculino" # default fallback
                         
-                        person_crop = frame[max(0, py1):min(h, py2), max(0, px1):min(w, px2)]
-                        if person_crop.size > 0 and self.config.is_module_enabled("emotion_detection"):
-                            cache_val = self.emotion_detector.analyze_emotion(person_crop, tracker_id)
+                        # Dynamic face ROI crop: use exact face box if available, otherwise crop top 35% of body
+                        if face_box is not None:
+                            fy1, fx2, fy2, fx1 = face_box
+                            face_crop = frame[max(0, fy1):min(h, fy2), max(0, fx1):min(w, fx2)]
+                        else:
+                            body_h = py2 - py1
+                            face_crop = frame[max(0, py1):min(h, py1 + int(body_h * 0.35)), max(0, px1):min(w, px2)]
+                        
+                        if face_crop.size > 0 and self.config.is_module_enabled("emotion_detection"):
+                            cache_val = self.emotion_detector.analyze_emotion(face_crop, tracker_id)
                             if cache_val:
                                 emotions = cache_val.get("emotions")
                                 estimated_gender = cache_val.get("gender", estimated_gender)
@@ -1087,59 +1109,58 @@ class SecurityDashboard(ctk.CTk):
                         else:
                             box_color = (0, 255, 255) # Yellow/Cyan
                             
-                        cv2.rectangle(frame, (px1, py1), (px2, py2), box_color, 2)
+                        cv2.rectangle(frame, (px1, py1), (px2, py2), box_color, box_thickness)
                         
                         # Top label (ID & Name) - Larger, clear, and visible
                         lbl_top = f"ID {tracker_id:02d}: {name}"
-                        font_scale = 0.6
-                        font_thickness = 1
                         (w_t, h_t), _ = cv2.getTextSize(lbl_top, cv2.FONT_HERSHEY_SIMPLEX, font_scale, font_thickness)
                         
                         # Handle top edge clipping
                         if py1 - h_t - 15 < 0:
                             y_rect_top = py1
-                            y_rect_bottom = py1 + h_t + 10
-                            y_text = py1 + h_t + 4
+                            y_rect_bottom = py1 + h_t + 12
+                            y_text = py1 + h_t + 4 + font_thickness
                         else:
-                            y_rect_top = py1 - h_t - 10
+                            y_rect_top = py1 - h_t - 12
                             y_rect_bottom = py1
-                            y_text = py1 - 4
+                            y_text = py1 - 4 - font_thickness // 2
                             
-                        cv2.rectangle(frame, (px1, y_rect_top), (px1 + w_t + 6, y_rect_bottom), box_color, -1)
-                        cv2.putText(frame, lbl_top, (px1 + 3, y_text), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness, cv2.LINE_AA)
+                        cv2.rectangle(frame, (px1, y_rect_top), (px1 + w_t + 8, y_rect_bottom), box_color, -1)
+                        cv2.putText(frame, lbl_top, (px1 + 4, y_text), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), font_thickness, cv2.LINE_AA)
                         
                         # Sub label (Estado: AUTORIZADO / NO AUTORIZADO)
                         lbl_sub = f"ESTADO: {status.upper()}"
-                        sub_font_scale = 0.5
-                        (w_s, h_s), _ = cv2.getTextSize(lbl_sub, cv2.FONT_HERSHEY_SIMPLEX, sub_font_scale, 1)
+                        sub_font_scale = font_scale * 0.8
+                        sub_thickness = max(1, font_thickness - 1)
+                        (w_s, h_s), _ = cv2.getTextSize(lbl_sub, cv2.FONT_HERSHEY_SIMPLEX, sub_font_scale, sub_thickness)
                         
                         if py1 - h_t - 15 < 0:
                             y_rect_top_s = y_rect_bottom
-                            y_rect_bottom_s = y_rect_bottom + h_s + 8
-                            y_text_s = y_rect_bottom + h_s + 3
+                            y_rect_bottom_s = y_rect_bottom + h_s + 10
+                            y_text_s = y_rect_bottom + h_s + 4 + sub_thickness
                         else:
                             y_rect_top_s = py1
-                            y_rect_bottom_s = py1 + h_s + 8
-                            y_text_s = py1 + h_s + 3
+                            y_rect_bottom_s = py1 + h_s + 10
+                            y_text_s = py1 + h_s + 4 + sub_thickness // 2
                             
-                        cv2.rectangle(frame, (px1, y_rect_top_s), (px1 + w_s + 6, y_rect_bottom_s), (30, 30, 30), -1)
-                        cv2.putText(frame, lbl_sub, (px1 + 3, y_text_s), cv2.FONT_HERSHEY_SIMPLEX, sub_font_scale, (255, 255, 255), 1, cv2.LINE_AA)
+                        cv2.rectangle(frame, (px1, y_rect_top_s), (px1 + w_s + 8, y_rect_bottom_s), (30, 30, 30), -1)
+                        cv2.putText(frame, lbl_sub, (px1 + 4, y_text_s), cv2.FONT_HERSHEY_SIMPLEX, sub_font_scale, (255, 255, 255), sub_thickness, cv2.LINE_AA)
                         
                         # Draw bottom labels (Emocion & Apariencia)
                         y_g_offset = 2
                         if emotions:
                             dominant_emotion = max(emotions.items(), key=lambda x: x[1])
                             lbl_emo = f"EMOCION: {dominant_emotion[0]} ({int(dominant_emotion[1])}%)"
-                            (w_e, h_e), _ = cv2.getTextSize(lbl_emo, cv2.FONT_HERSHEY_SIMPLEX, 0.4, 1)
-                            cv2.rectangle(frame, (px1, py2 + 2), (px1 + w_e + 6, py2 + h_e + 10), (0, 0, 0), -1)
-                            cv2.putText(frame, lbl_emo, (px1 + 3, py2 + h_e + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
-                            y_g_offset = h_e + 14
+                            (w_e, h_e), _ = cv2.getTextSize(lbl_emo, cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.75, sub_thickness)
+                            cv2.rectangle(frame, (px1, py2 + 2), (px1 + w_e + 8, py2 + h_e + 12), (0, 0, 0), -1)
+                            cv2.putText(frame, lbl_emo, (px1 + 4, py2 + h_e + 8), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.75, (0, 255, 255), sub_thickness, cv2.LINE_AA)
+                            y_g_offset = h_e + 16
                             
                         lbl_gender = f"APARIENCIA: {estimated_gender} (Clasif. visual estimada)"
-                        (w_g, h_g), _ = cv2.getTextSize(lbl_gender, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
+                        (w_g, h_g), _ = cv2.getTextSize(lbl_gender, cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.65, sub_thickness)
                         
-                        cv2.rectangle(frame, (px1, py2 + y_g_offset), (px1 + w_g + 6, py2 + y_g_offset + h_g + 8), (0, 0, 0), -1)
-                        cv2.putText(frame, lbl_gender, (px1 + 3, py2 + y_g_offset + h_g + 4), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
+                        cv2.rectangle(frame, (px1, py2 + y_g_offset), (px1 + w_g + 8, py2 + y_g_offset + h_g + 12), (0, 0, 0), -1)
+                        cv2.putText(frame, lbl_gender, (px1 + 4, py2 + y_g_offset + h_g + 8), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.65, (200, 200, 200), sub_thickness, cv2.LINE_AA)
                         
                         # Pack details for sidebar info frame
                         active_detections_info.append({
@@ -1163,14 +1184,14 @@ class SecurityDashboard(ctk.CTk):
                         is_risk = o_name in risk_objects_config
                         color = (0, 0, 255) if is_risk else (255, 255, 0)
                         
-                        cv2.rectangle(frame, (ox1, oy1), (ox2, oy2), color, 1)
+                        cv2.rectangle(frame, (ox1, oy1), (ox2, oy2), color, box_thickness)
                         label = f"{o_name.upper()} - {int(o_conf * 100)}%"
                         if is_risk:
                             label += " [RIESGO]"
                         
-                        (w_l, h_l), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.38, 1)
-                        cv2.rectangle(frame, (ox1, oy1 - 5 - h_l - 4), (ox1 + w_l + 6, oy1 - 3), color, -1)
-                        cv2.putText(frame, label, (ox1 + 3, oy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1, cv2.LINE_AA)
+                        (w_l, h_l), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.75, sub_thickness)
+                        cv2.rectangle(frame, (ox1, oy1 - 5 - h_l - 6), (ox1 + w_l + 8, oy1 - 3), color, -1)
+                        cv2.putText(frame, label, (ox1 + 4, oy1 - 5), cv2.FONT_HERSHEY_SIMPLEX, font_scale * 0.75, (255, 255, 255), sub_thickness, cv2.LINE_AA)
 
                     # Render details in sidebar info panel if Camera view is active
                     self.render_side_detections(active_detections_info)
