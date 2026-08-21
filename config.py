@@ -41,8 +41,8 @@ class AppConfig:
         # Detection properties
         if not self.db.get_setting("min_confidence"):
             self.db.set_setting("min_confidence", os.getenv("DEFAULT_MIN_CONFIDENCE", "0.5"))
-        if not self.db.get_setting("risk_objects"):
-            self.db.set_setting("risk_objects", os.getenv("DEFAULT_RISK_OBJECTS", "knife,scissors,backpack,handbag,suitcase,cell phone"))
+        # Force overwrite to ensure cell phone and bags are removed from risk objects list
+        self.db.set_setting("risk_objects", "knife,scissors,gun,weapon")
             
         # Behavior guidelines
         if not self.db.get_setting("restricted_hours_start"):

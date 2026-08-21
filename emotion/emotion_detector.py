@@ -1,3 +1,4 @@
+import cv2
 import time
 import random
 import threading
@@ -52,9 +53,14 @@ class EmotionDetector:
                 emotions = res["emotions"]
                 gender_str = res["gender"]
             else:
-                # DeepFace analyze on the crop for both emotion and gender
+                # Convert to grayscale first to eliminate pink/red color cast/confusion
+                gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY)
+                # Convert back to 3 channels to match DeepFace expected input dimension
+                face_crop_gray = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                
+                # DeepFace analyze on the grayscale-3ch crop
                 analysis = DeepFace.analyze(
-                    img_path=face_crop, 
+                    img_path=face_crop_gray, 
                     actions=['emotion', 'gender'], 
                     enforce_detection=False,
                     silent=True
