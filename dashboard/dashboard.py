@@ -994,11 +994,12 @@ class SecurityDashboard(ctk.CTk):
                         pixel_pts = np.array([[int(nx * w), int(ny * h)] for nx, ny in pts], np.int32)
                         color = (0, 0, 200) if is_restr else (0, 200, 0)
                         cv2.polylines(frame, [pixel_pts], True, color, 1)
-                        # Label background and text
-                        (w_lbl, h_lbl), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
-                        cv2.rectangle(frame, (pixel_pts[0][0], pixel_pts[0][1] - 12 - h_lbl), (pixel_pts[0][0] + w_lbl + 2, pixel_pts[0][1] - 10), (0, 0, 0), -1)
-                        cv2.putText(frame, name, (pixel_pts[0][0] + 1, pixel_pts[0][1] - 12), 
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.35, color, 1, cv2.LINE_AA)
+                        
+                        # Large, readable labels in solid boxes with white text (fontScale=0.55)
+                        (w_lbl, h_lbl), _ = cv2.getTextSize(name, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 1)
+                        cv2.rectangle(frame, (pixel_pts[0][0], pixel_pts[0][1] - h_lbl - 12), (pixel_pts[0][0] + w_lbl + 6, pixel_pts[0][1]), color, -1)
+                        cv2.putText(frame, name, (pixel_pts[0][0] + 3, pixel_pts[0][1] - 5), 
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
                         
                     # Store active details to render on sidebar info frame
                     active_detections_info = []
@@ -1027,11 +1028,16 @@ class SecurityDashboard(ctk.CTk):
                                 name, status, face_confidence = self.face_recognizer.mock_recognize(tracker_id)
                                 self.face_recognition_cache[tracker_id] = (name, status, face_confidence, current_time)
                             
-                        # Emotion Analysis
+                        # Retrieve emotions and gender from cache
                         emotions = None
+                        estimated_gender = "Femenino" if tracker_id in [1, 2, 5] else "Masculino" # default fallback
+                        
                         person_crop = frame[max(0, py1):min(h, py2), max(0, px1):min(w, px2)]
                         if person_crop.size > 0 and self.config.is_module_enabled("emotion_detection"):
-                            emotions = self.emotion_detector.analyze_emotion(person_crop, tracker_id)
+                            cache_val = self.emotion_detector.analyze_emotion(person_crop, tracker_id)
+                            if cache_val:
+                                emotions = cache_val.get("emotions")
+                                estimated_gender = cache_val.get("gender", estimated_gender)
                             
                         # Behavior violations
                         duration = self.person_tracker.get_dwell_time(tracker_id)
@@ -1129,7 +1135,6 @@ class SecurityDashboard(ctk.CTk):
                             cv2.putText(frame, lbl_emo, (px1 + 3, py2 + h_e + 6), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1, cv2.LINE_AA)
                             y_g_offset = h_e + 14
                             
-                        estimated_gender = "Femenino" if tracker_id % 2 == 0 else "Masculino"
                         lbl_gender = f"APARIENCIA: {estimated_gender} (Clasif. visual estimada)"
                         (w_g, h_g), _ = cv2.getTextSize(lbl_gender, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)
                         

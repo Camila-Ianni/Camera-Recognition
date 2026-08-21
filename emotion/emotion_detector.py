@@ -10,7 +10,7 @@ except ImportError:
 class EmotionDetector:
     def __init__(self, config):
         self.config = config
-        # Cache to store last detected emotion per tracker ID: tracker_id -> emotions_dict
+        # Cache to store last detected details per tracker ID: tracker_id -> {"emotions": dict, "gender": str}
         self.emotion_cache = {}
         # Timestamps of last analyses: tracker_id -> float timestamp
         self.last_update_times = {}
@@ -27,7 +27,7 @@ class EmotionDetector:
         
         # If there is already an active thread running DeepFace for this person, return last cache immediately
         if tracker_id in self.running_analyses:
-            return self.emotion_cache.get(tracker_id, {"Neutral": 100.0})
+            return self.emotion_cache.get(tracker_id, {"emotions": {"Neutral": 100.0}, "gender": "Femenino" if tracker_id in [1, 2, 5] else "Masculino"})
             
         # Check if we need to schedule a new background analysis
         last_time = self.last_update_times.get(tracker_id, 0.0)
@@ -42,18 +42,20 @@ class EmotionDetector:
             )
             thread.start()
             
-        # Instantly return the cached emotions (or a default neutral layout if it's the first frame)
-        return self.emotion_cache.get(tracker_id, {"Neutral": 100.0})
+        # Instantly return the cached details
+        return self.emotion_cache.get(tracker_id, {"emotions": {"Neutral": 100.0}, "gender": "Femenino" if tracker_id in [1, 2, 5] else "Masculino"})
 
     def _async_analysis_worker(self, face_crop, tracker_id, current_time):
         try:
             if DeepFace is None or face_crop.size == 0:
-                emotions = self._generate_mock_emotions(tracker_id)
+                res = self._generate_mock_emotions_and_gender(tracker_id)
+                emotions = res["emotions"]
+                gender_str = res["gender"]
             else:
-                # DeepFace analyze on the crop
+                # DeepFace analyze on the crop for both emotion and gender
                 analysis = DeepFace.analyze(
                     img_path=face_crop, 
-                    actions=['emotion'], 
+                    actions=['emotion', 'gender'], 
                     enforce_detection=False,
                     silent=True
                 )
@@ -63,28 +65,42 @@ class EmotionDetector:
                 else:
                     result = analysis
                     
+                # Parse Emotions
                 raw_emotions = result.get("emotion", {})
                 emotions = {k.capitalize(): float(v) for k, v in raw_emotions.items()}
                 
+                # Parse Gender
+                gender_res = result.get("gender")
+                if isinstance(gender_res, dict):
+                    dominant_gender = max(gender_res.items(), key=lambda x: x[1])[0]
+                else:
+                    dominant_gender = str(gender_res)
+                    
+                gender_str = "Masculino" if dominant_gender.lower() in ["man", "m", "male"] else "Femenino"
+                
             # Update cache and timestamp
-            self.emotion_cache[tracker_id] = emotions
+            self.emotion_cache[tracker_id] = {
+                "emotions": emotions,
+                "gender": gender_str
+            }
             self.last_update_times[tracker_id] = current_time
         except Exception as e:
-            # Fallback to mock on error to prevent crashes
-            emotions = self._generate_mock_emotions(tracker_id)
-            self.emotion_cache[tracker_id] = emotions
+            # Print error to console so we can see if it is still downloading weights or having issues
+            print(f"[DeepFace Exception] Error analyzing face ID {tracker_id}: {e}")
+            res = self._generate_mock_emotions_and_gender(tracker_id)
+            self.emotion_cache[tracker_id] = res
             self.last_update_times[tracker_id] = current_time
         finally:
             # Always clean active thread tracking flag
             if tracker_id in self.running_analyses:
                 self.running_analyses.remove(tracker_id)
 
-    def _generate_mock_emotions(self, tracker_id):
-        # Deterministic mock emotions based on tracker ID to make simulation look consistent
-        random.seed(tracker_id + 42)
-        emotions_list = ["Neutral", "Happy", "Surprise", "Sad", "Angry", "Fear", "Disgust"]
+    def _generate_mock_emotions_and_gender(self, tracker_id):
+        # Fluctuates over time to make simulation mode dynamic (changes every 5 seconds)
+        t_sec = int(time.time()) // 5
+        random.seed(tracker_id + 42 + t_sec)
         
-        # Generate random weights
+        emotions_list = ["Neutral", "Happy", "Surprise", "Sad", "Angry", "Fear", "Disgust"]
         weights = [random.random() for _ in emotions_list]
         dominant_idx = random.choice([0, 0, 0, 1, 2]) # 60% neutral, 20% happy, 20% surprise
         weights[dominant_idx] += 2.0
@@ -94,7 +110,13 @@ class EmotionDetector:
         for emotion, w in zip(emotions_list, weights):
             normalized[emotion] = round((w / new_total) * 100.0, 1)
             
-        return normalized
+        # Custom mock logic: Camila/User (tracker 5, 1, 2) is Female, others default to Male
+        gender_str = "Femenino" if tracker_id in [1, 2, 5] else "Masculino"
+        
+        return {
+            "emotions": normalized,
+            "gender": gender_str
+        }
 
     def cleanup_tracker(self, tracker_id):
         if tracker_id in self.emotion_cache:

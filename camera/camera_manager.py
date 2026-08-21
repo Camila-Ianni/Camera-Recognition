@@ -31,9 +31,7 @@ class CameraManager:
             return False
             
         # Set hardware webcam dimensions explicitly to prevent buffer stride glitches
-        if isinstance(self.source, int):
-            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
-            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        # (Removed to prevent macOS FaceTime camera sensor crop/zoom-in behavior)
             
         self.is_running = True
         self.thread = threading.Thread(target=self._capture_loop, daemon=True)
